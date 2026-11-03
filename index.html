@@ -48,12 +48,12 @@ const $=id=>document.getElementById(id);
 const v=$('v');let cv=$('cv');const msg=$('msg'),bar=$('bar');
 const say=(t,p)=>{msg.textContent=t;if(p!=null)bar.style.width=Math.round(p*100)+'%'};
 const DEF={ai:1,bright:0,gamma:1,contrast:1.05,sat:1.1,sharp:0.35,denoise:0.3};
-let P=Object.assign({},DEF),night=false,split=true,srMode='auto',useSR=false,cancel=false;
+let P=Object.assign({},DEF),night=false,split=true,srMode='on',useSR=false,cancel=false;
 const SL=[['ai','Intensidad IA',0,1.5,0.01],['bright','Brillo extra',-0.5,1,0.01],['gamma','Gamma',0.3,3,0.01],['contrast','Contraste',0.5,2,0.01],['sat','Saturación',0,2,0.01],['sharp','Nitidez',0,2,0.01],['denoise','Reducción de ruido',0,1,0.01]];
 SL.forEach(([k,n,mi,ma,st])=>{const d=document.createElement('div');d.className='row';d.innerHTML=`<span>${n}</span><input type=range id=s_${k} min=${mi} max=${ma} step=${st}><b id=b_${k}></b>`;$('sliders').appendChild(d);
  d.querySelector('input').oninput=e=>{P[k]=+e.target.value;sync();draw()}});
 function sync(){SL.forEach(([k])=>{$('s_'+k).value=P[k];$('b_'+k).textContent=(+P[k]).toFixed(2)});$('night').classList.toggle('on',night);$('split').classList.toggle('on',split);
- $('srBtn').textContent=srMode==='auto'?`Auto (${useSR?'activa':'no necesaria'})`:srMode==='on'?'Activada':'Desactivada'}
+ $('srBtn').textContent=srMode==='on'?'✅ Activada':'Desactivada'}
 sync();
 
 // ================= IA (onnxruntime-web) =================
@@ -121,9 +121,9 @@ function loop(){if(v.paused||v.ended)return;updateCurve();draw();$('seek').value
 
 // ================= Súper resolución =================
 function srPlan(){const W=v.videoWidth,H=v.videoHeight,m=Math.max(W,H);
- useSR=srMode==='on'||(srMode==='auto'&&Math.min(W,H)<=720);
- const inScale=Math.min(1,640/m);const iw=Math.round(W*inScale/2)*2,ih=Math.round(H*inScale/2)*2;
- let ow=W*2,oh=H*2;const cap=1920/Math.max(ow,oh);if(cap<1){ow*=cap;oh*=cap}
+ useSR=srMode==='on';const desk=srEP==='GPU'&&!matchMedia('(pointer:coarse)').matches;
+ const inScale=Math.min(1,(srEP==='GPU'?960:640)/m);const iw=Math.round(W*inScale/2)*2,ih=Math.round(H*inScale/2)*2;
+ let ow=W*2,oh=H*2;const cap=(desk?2560:1920)/Math.max(ow,oh);if(cap<1){ow*=cap;oh*=cap}
  return{iw,ih,ow:Math.round(ow/2)*2,oh:Math.round(oh/2)*2}}
 const srIn=document.createElement('canvas'),srBig=document.createElement('canvas'),srOut=document.createElement('canvas');
 // toma el cuadro ya aclarado (canvas cv) y lo pasa por Real-ESRGAN x4, luego reduce a la salida
@@ -145,12 +145,12 @@ async function autoAnalyze(){$('export').disabled=true;say('🧠 Cargando IA…'
  let lums=[];for(let k=0;k<5;k++){await seekTo(v.duration*(k+0.5)/5);lums.push(frameLum());say('🔍 Analizando video…',0.2+0.1*k)}
  const m=lums.reduce((a,b)=>a+b)/lums.length;
  P=Object.assign({},DEF);P.denoise=m<0.12?0.6:m<0.25?0.4:0.15;P.ai=m<0.08?1.2:m>0.45?0.5:1;P.sharp=0.35;autoGain=Math.min(4,0.45/Math.max(m,0.05));
- srPlan();sync();await seekTo(v.duration/2);await updateCurve('reset');draw();
+ await loadSR();srPlan();sync();await seekTo(v.duration/2);await updateCurve('reset');draw();
  const W=v.videoWidth,H=v.videoHeight;
  $('tags').innerHTML=`<span>${W}×${H}</span><span>Luz: ${(m*100).toFixed(0)}% ${m<0.25?'(muy oscuro)':''}</span><span>${aiOK?'IA Zero-DCE++ ✔':'Modo automático sin IA'}</span><span>${useSR?'Súper resolución → '+srPlan().ow+'×'+srPlan().oh:'Resolución original'}</span>`;
  if(useSR){say('✨ Mejorando calidad con IA (vista previa)…',0.8);if(await loadSR()){try{draw(false);const t0=performance.now();const o=await superRes(srPlan());srMs=performance.now()-t0;
    const c=document.createElement('canvas');c.width=o.width;c.height=o.height;const x=c.getContext('2d');x.drawImage(o,0,0);x.drawImage(v,0,0,v.videoWidth/2,v.videoHeight,0,0,o.width/2,o.height);x.fillStyle='#fff';x.fillRect(o.width/2-2,0,4,o.height);
-   x.font=`bold ${Math.round(o.height/20)}px sans-serif`;x.fillText('ANTES',10,o.height/14);x.fillText('DESPUÉS (IA)',o.width/2+10,o.height/14);const est=srMs/1000*v.duration*30;if(srMode==='auto'&&est>300){useSR=false;sync();$('tags').innerHTML+=`<span>Video largo: súper resolución tardaría ~${Math.round(est/60)} min; se usa nitidez rápida (puedes activarla en Ajustes avanzados)</span>`}$('cmp').src=c.toDataURL('image/jpeg',0.85);$('cmp').classList.remove('hide');draw()}catch(e){console.warn(e);useSR=false;sync()}}else{useSR=false;sync()}}
+   x.font=`bold ${Math.round(o.height/20)}px sans-serif`;x.fillText('ANTES',10,o.height/14);x.fillText('DESPUÉS (IA)',o.width/2+10,o.height/14);const est=srMs/1000*v.duration*30;$('tags').innerHTML+=`<span>⏱️ Tiempo estimado de exportación: ~${est<90?Math.round(est)+' s':Math.round(est/60)+' min'} (${srEP})</span>`;$('cmp').src=c.toDataURL('image/jpeg',0.85);$('cmp').classList.remove('hide');draw()}catch(e){console.warn(e);useSR=false;sync()}}else{useSR=false;sync()}}
  say(`✅ Listo. Mira el antes/después y toca "Descargar video mejorado".${useSR&&srMs?` (Súper resolución ${srEP}: ~${(srMs/1000).toFixed(1)} s por cuadro)`:''}`,1);$('export').disabled=false}
 let srMs=0,srEP='';
 v.onplay=()=>{$('play').textContent='⏸️ Pausa';loop()};v.onpause=()=>$('play').textContent='▶️ Reproducir';
@@ -158,16 +158,16 @@ v.onseeked=()=>{if(v.paused){updateCurve().then(()=>draw())}};
 $('play').onclick=()=>{if(!v.src)return;v.paused?v.play():v.pause()};
 $('seek').oninput=e=>{if(v.duration)v.currentTime=e.target.value/1000*v.duration};
 $('split').onclick=()=>{split=!split;sync();draw()};$('night').onclick=()=>{night=!night;sync();draw()};
-$('reset').onclick=()=>{srMode='auto';if(v.src)autoAnalyze()};
-$('srBtn').onclick=()=>{srMode=srMode==='auto'?'on':srMode==='on'?'off':'auto';if(v.videoWidth)srPlan();sync()};
+$('reset').onclick=()=>{srMode='on';if(v.src)autoAnalyze()};
+$('srBtn').onclick=()=>{srMode=srMode==='on'?'off':'on';if(v.videoWidth)srPlan();sync()};
 $('cancel').onclick=()=>{cancel=true};
 $('png').onclick=async()=>{if(!v.videoWidth)return;draw(false);let src=cv;if(useSR&&await loadSR()){say('✨ Aplicando súper resolución…');src=await superRes(srPlan())}
  src.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='foto-mejorada.png';a.click();draw();say('📷 Foto guardada.')},'image/png')};
 
 // ================= Exportar =================
-$('export').onclick=async()=>{if(!v.videoWidth)return;v.pause();cancel=false;$('export').disabled=true;$('cancel').classList.remove('hide');$('dl').innerHTML='';
+$('export').onclick=async()=>{if(!v.videoWidth)return;v.pause();cancel=false;$('export').disabled=true;$('cancel').classList.remove('hide');$('dl').innerHTML='';let wl=null;try{wl=await navigator.wakeLock?.request('screen')}catch(e){}
  try{if(window.VideoEncoder&&window.Mp4Muxer)await exportWebCodecs();else await exportRealtime()}catch(e){console.error(e);say('Error al exportar: '+e.message+'. Probando modo alternativo…');try{await exportRealtime()}catch(e2){say('No se pudo exportar: '+e2.message)}}
- $('export').disabled=false;$('cancel').classList.add('hide');draw()};
+ try{wl&&wl.release()}catch(e){}$('export').disabled=false;$('cancel').classList.add('hide');draw()};
 function offer(blob,ext){$('dl').innerHTML=`<a class="btn dl" download="video-mejorado.${ext}" href="${URL.createObjectURL(blob)}">💾 Guardar video-mejorado.${ext} (${(blob.size/1048576).toFixed(1)} MB)</a>`}
 async function pickCodec(w,h){for(const c of ['avc1.640033','avc1.640028','avc1.4d0028','avc1.42E01F']){const cfg={codec:c,width:w,height:h,bitrate:Math.round(w*h*30*0.15),framerate:30};try{if((await VideoEncoder.isConfigSupported(cfg)).supported)return cfg}catch(e){}}return null}
 async function exportWebCodecs(){
@@ -183,7 +183,7 @@ async function exportWebCodecs(){
   await seekTo(i/fps);await updateCurve(true);draw(false);const src=sr?await superRes(plan):cv;
   const fr=new VideoFrame(src,{timestamp:Math.round(i*1e6/fps),duration:Math.round(1e6/fps)});venc.encode(fr,{keyFrame:i%60===0});fr.close();
   while(venc.encodeQueueSize>4)await new Promise(r=>setTimeout(r,5));
-  const el=(performance.now()-t0)/1000,eta=el/(i+1)*(N-i-1);say(`⏳ Mejorando cuadro ${i+1}/${N} · faltan ~${eta<90?Math.round(eta)+' s':Math.round(eta/60)+' min'} (no cierres la página)`,(i+1)/N)}
+  const el=(performance.now()-t0)/1000,eta=el/(i+1)*(N-i-1);say(`⏳ Mejorando cuadro ${i+1}/${N} · faltan ~${eta<90?Math.round(eta)+' s':Math.round(eta/60)+' min'} · mantén esta página abierta y en primer plano`,(i+1)/N)}
  await venc.flush();
  if(acfg){say('🔊 Agregando audio…');const aenc=new AudioEncoder({output:(c,m)=>muxer.addAudioChunk(c,m),error:e=>console.warn(e)});const {mux,...ak}=acfg;aenc.configure(ak);
   const ch=acfg.numberOfChannels,len=Math.min(ab.length,Math.ceil(N/fps*ab.sampleRate)),B=4096;
@@ -192,6 +192,7 @@ async function exportWebCodecs(){
   await aenc.flush()}
  muxer.finalize();const blob=new Blob([muxer.target.buffer],{type:'video/mp4'});offer(blob,'mp4');
  say(`✅ ¡Listo! ${ow}×${oh}${acfg?' con audio':' (sin audio)'} · ${((performance.now()-t0)/1000).toFixed(0)} s`,1)}
+document.addEventListener('visibilitychange',async()=>{if($('export').disabled&&v.src){if(document.hidden)return;try{await navigator.wakeLock?.request('screen')}catch(e){}say('⚠️ Vuelve a dejar esta página en primer plano hasta terminar.')}});
 let actx,dest;
 async function exportRealtime(){ // respaldo: grabación en tiempo real (sin súper resolución)
  if(!window.MediaRecorder||!cv.captureStream)throw new Error('Tu navegador no permite exportar video');
