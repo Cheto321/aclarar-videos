@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="theme-color" content="#0d0f14">
+<script src="coi-serviceworker.min.js"></script><link rel="icon" href="data:,"><title>Aclarar Videos IA</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,system-ui,sans-serif;background:#0d0f14;color:#e8eaf0}
+header{padding:14px 16px;font-weight:700;font-size:20px;border-bottom:1px solid #222}
+main{max-width:900px;margin:auto;padding:12px}
+.card{background:#161a22;border-radius:14px;padding:14px;margin-bottom:12px}
+canvas{width:100%;background:#000;border-radius:10px;display:block}
+input[type=file]{display:none}
+.big{display:block;width:100%;text-align:center;padding:22px;font-size:20px;font-weight:700;border-radius:14px;background:linear-gradient(135deg,#2b6cff,#8a3dff);color:#fff;cursor:pointer;border:0}
+.row{display:flex;align-items:center;gap:10px;margin:8px 0}.row span{width:150px;font-size:14px}.row input{flex:1}.row b{width:44px;text-align:right;font-size:13px;color:#9aa}
+button,a.btn{background:#2b6cff;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-size:15px;margin:4px 4px 4px 0;text-decoration:none;display:inline-block}
+a.btn.dl{display:block;text-align:center;font-size:18px;padding:16px;background:#1aa35a}
+button.sec{background:#2a3040}button.on{background:#1aa35a}button:disabled{opacity:.5}
+#msg{font-size:14px;color:#9ab;min-height:1em;margin:6px 0}video{display:none}
+.bar{height:10px;background:#2a3040;border-radius:5px;overflow:hidden;margin:6px 0}.bar i{display:block;height:100%;width:0;background:#1aa35a;transition:width .2s}
+.tags span{display:inline-block;font-size:12px;background:#22283a;border-radius:20px;padding:4px 10px;margin:2px}
+details summary{cursor:pointer;font-weight:600}.hide{display:none}
+#cmp{width:100%;border-radius:10px;margin-top:8px}
+</style></head><body>
+<header>🌙 Aclarar Videos <small style="color:#8a3dff">IA</small></header>
+<main>
+<div class="card"><label class="big">📁 Elegir video<input id="file" type="file" accept="video/*"></label>
+<p style="font-size:12px;color:#889;margin:8px 0 0">La IA aclara videos oscuros o de noche y mejora la calidad automáticamente. Todo se procesa en tu teléfono: nada se sube a internet.</p></div>
+<div class="card hide" id="work">
+<div id="msg">Cargando IA…</div><div class="bar"><i id="bar"></i></div>
+<div class="tags" id="tags"></div>
+<canvas id="cv" width="640" height="360" style="margin-top:8px"></canvas>
+<div style="margin-top:8px"><button id="play">▶️ Reproducir</button><button id="split" class="sec on">↔️ Antes/Después</button><button id="night" class="sec">🟢 Visión nocturna</button></div>
+<input id="seek" type="range" min="0" max="1000" value="0" style="width:100%">
+<img id="cmp" class="hide" alt="Comparación de calidad">
+<div style="margin-top:10px"><button id="export" class="big" style="padding:16px">⬇️ Descargar video mejorado</button>
+<button id="png" class="sec">📷 Guardar foto</button><button id="cancel" class="sec hide">✖️ Cancelar</button></div>
+<div id="dl"></div></div>
+<div class="card"><details><summary>⚙️ Ajustes avanzados (opcional)</summary>
+<div class="row"><span>Súper resolución IA</span><button id="srBtn" class="sec">Auto</button></div>
+<div id="sliders"></div><button id="reset" class="sec">↺ Volver a automático</button></details></div>
+<p style="font-size:11px;color:#667;text-align:center">IA: Zero-DCE++ (Li et al., CC BY-NC 4.0, uso no comercial) · Real-ESRGAN general-x4v3 (BSD-3) · onnxruntime-web (MIT)</p>
+</main>
+<video id="v" playsinline webkit-playsinline muted preload="auto"></video>
+<script src="ort/ort.webgpu.min.js"></script>
+<script src="ort/mp4-muxer.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const v=$('v');let cv=$('cv');const msg=$('msg'),bar=$('bar');
+const say=(t,p)=>{msg.textContent=t;if(p!=null)bar.style.width=Math.round(p*100)+'%'};
+const DEF={ai:1,bright:0,gamma:1,contrast:1.05,sat:1.1,sharp:0.35,denoise:0.3};
+let P=Object.assign({},DEF),night=false,split=true,srMode='auto',useSR=false,cancel=false;
+const SL=[['ai','Intensidad IA',0,1.5,0.01],['bright','Brillo extra',-0.5,1,0.01],['gamma','Gamma',0.3,3,0.01],['contrast','Contraste',0.5,2,0.01],['sat','Saturación',0,2,0.01],['sharp','Nitidez',0,2,0.01],['denoise','Reducción de ruido',0,1,0.01]];
+SL.forEach(([k,n,mi,ma,st])=>{const d=document.createElement('div');d.className='row';d.innerHTML=`<span>${n}</span><input type=range id=s_${k} min=${mi} max=${ma} step=${st}><b id=b_${k}></b>`;$('sliders').appendChild(d);
+ d.querySelector('input').oninput=e=>{P[k]=+e.target.value;sync();draw()}});
+function sync(){SL.forEach(([k])=>{$('s_'+k).value=P[k];$('b_'+k).textContent=(+P[k]).toFixed(2)});$('night').classList.toggle('on',night);$('split').classList.toggle('on',split);
+ $('srBtn').textContent=srMode==='auto'?`Auto (${useSR?'activa':'no necesaria'})`:srMode==='on'?'Activada':'Desactivada'}
+sync();
+
+// ================= IA (onnxruntime-web) =================
+let curveSess=null,srSess=null,aiOK=false;
+const CW=256;let CH=144;const small=document.createElement('canvas'),sctx=small.getContext('2d',{willReadFrequently:true});
+let curveEMA=null,curveBytes=null;
+async function loadAI(){try{
+  ort.env.wasm.wasmPaths=new URL('ort/',location.href).href;
+  ort.env.wasm.numThreads=self.crossOriginIsolated?Math.min(4,navigator.hardwareConcurrency||2):1;
+  curveSess=await ort.InferenceSession.create('modelos/zero_dce_pp.onnx',{executionProviders:['wasm']});aiOK=true;
+ }catch(e){console.warn('IA no disponible, uso algoritmo automático',e);aiOK=false}}
+async function loadSR(){if(srSess||!aiOK)return srSess;try{try{if(!navigator.gpu)throw 0;srSess=await ort.InferenceSession.create('modelos/realesr_general_x4v3.onnx',{executionProviders:['webgpu']});srEP='GPU'}catch(_){srSess=await ort.InferenceSession.create('modelos/realesr_general_x4v3.onnx',{executionProviders:['wasm']});srEP='CPU'}}catch(e){console.warn('SR no disponible',e)}return srSess}
+function toTensor(d,w,h){const n=w*h,f=new Float32Array(3*n);for(let i=0;i<n;i++){f[i]=d[i*4]/255;f[n+i]=d[i*4+1]/255;f[2*n+i]=d[i*4+2]/255}return new ort.Tensor('float32',f,[1,3,h,w])}
+// curva adaptativa (respaldo sin IA): mapa de luminancia local -> alfa por zona (tipo CLAHE)
+function iter8(x,a){for(let k=0;k<8;k++)x=x+a*(x*x-x);return x}
+const LUT=new Float32Array(256);for(let i=0;i<256;i++){const l=Math.max(i/255,1e-3),tg=l<0.42?0.42+0.35*l:l;let lo=-1,hi=0;for(let k=0;k<30;k++){const m=(lo+hi)/2;iter8(l,m)>tg?lo=m:hi=m}LUT[i]=(lo+hi)/2}
+function adaptiveCurve(d,w,h){const L=new Float32Array(w*h);for(let i=0;i<w*h;i++)L[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
+ const B=new Float32Array(w*h),r=6;for(let y=0;y<h;y++)for(let x=0;x<w;x++){let s=0,c=0;for(let j=-r;j<=r;j+=2)for(let i=-r;i<=r;i+=2){const xx=Math.min(w-1,Math.max(0,x+i)),yy=Math.min(h-1,Math.max(0,y+j));s+=L[yy*w+xx];c++}B[y*w+x]=s/c}
+ const out=new Float32Array(3*w*h);for(let i=0;i<w*h;i++){const a=LUT[Math.min(255,B[i]|0)];out[i]=out[w*h+i]=out[2*w*h+i]=a}return out}
+let busy=false;
+async function updateCurve(force){if(busy&&!force)return;busy=true;try{
+  sctx.drawImage(v,0,0,CW,CH);const d=sctx.getImageData(0,0,CW,CH).data;let r;
+  if(aiOK){const o=await curveSess.run({input:toTensor(d,CW,CH)});r=o.curves.data}else r=adaptiveCurve(d,CW,CH);
+  if(!curveEMA||curveEMA.length!==r.length||force==='reset')curveEMA=Float32Array.from(r);else for(let i=0;i<r.length;i++)curveEMA[i]=0.75*curveEMA[i]+0.25*r[i]; // suavizado temporal
+  const n=CW*CH;curveBytes=curveBytes&&curveBytes.length===n*4?curveBytes:new Uint8Array(n*4);
+  for(let i=0;i<n;i++){for(let c=0;c<3;c++)curveBytes[i*4+c]=Math.max(0,Math.min(255,Math.round((curveEMA[c*n+i]+1)*127.5)));curveBytes[i*4+3]=255}
+  if(useGL){gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,ctex);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,CW,CH,0,gl.RGBA,gl.UNSIGNED_BYTE,curveBytes);gl.activeTexture(gl.TEXTURE0)}
+ }catch(e){console.warn(e)}busy=false}
+
+// ================= WebGL =================
+let gl=cv.getContext('webgl',{preserveDrawingBuffer:true}),prog,tex,ctex,U={};
+const VS=`attribute vec2 p;varying vec2 uv;void main(){uv=vec2(p.x*.5+.5,.5-p.y*.5);gl_Position=vec4(p,0,1);}`;
+const FS=`precision mediump float;varying vec2 uv;uniform sampler2D t,ct;uniform vec2 px;
+uniform float ai,br,ga,co,sa,sh,dn,ni,sp;
+vec3 S(vec2 o){return texture2D(t,uv+o*px).rgb;}
+vec3 E(vec3 x){vec3 a=(texture2D(ct,uv).rgb*2.0-1.0)*ai;for(int i=0;i<8;i++)x=x+a*(x*x-x);return x;}
+void main(){vec3 c=S(vec2(0));
+ if(sp>0.5&&uv.x<0.5){gl_FragColor=vec4(c,1);return;}
+ if(dn>0.0){vec3 s=c;float w=1.0;for(int i=-2;i<=2;i++)for(int j=-2;j<=2;j++){if(i==0&&j==0)continue;vec3 q=S(vec2(i,j)*1.5);float k=exp(-dot(q-c,q-c)*(40.0/(dn+0.01)))*dn;s+=q*k;w+=k;}c=s/w;}
+ if(sh>0.0){vec3 b=(S(vec2(1,0))+S(vec2(-1,0))+S(vec2(0,1))+S(vec2(0,-1)))*.25;c+=(c-b)*sh;}
+ c=E(clamp(c,0.,1.));
+ c=clamp(c*(1.0+br*2.0)+br*0.1,0.0,1.0);c=pow(c,vec3(1.0/ga));c=(c-0.5)*co+0.5;
+ float l=dot(c,vec3(.299,.587,.114));c=mix(vec3(l),c,sa);
+ if(ni>0.5){l=pow(clamp(l*1.4,0.,1.),0.8);c=vec3(0.1,1.0,0.25)*l;}
+ if(sp>0.5&&abs(uv.x-0.5)<0.002)c=vec3(1);
+ gl_FragColor=vec4(clamp(c,0.,1.),1);}`;
+function mkTex(){const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);[gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T].forEach(p=>gl.texParameteri(gl.TEXTURE_2D,p,gl.CLAMP_TO_EDGE));
+ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);return t}
+function initGL(){if(!gl)return false;try{const sh=(t,s)=>{const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);if(!gl.getShaderParameter(x,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(x);return x};
+ prog=gl.createProgram();gl.attachShader(prog,sh(gl.VERTEX_SHADER,VS));gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FS));gl.linkProgram(prog);gl.useProgram(prog);
+ const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+ const a=gl.getAttribLocation(prog,'p');gl.enableVertexAttribArray(a);gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);
+ ['t','ct','px','ai','br','ga','co','sa','sh','dn','ni','sp'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+ gl.activeTexture(gl.TEXTURE1);ctex=mkTex();gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([127,127,127,255]));
+ gl.activeTexture(gl.TEXTURE0);tex=mkTex();gl.uniform1i(U.t,0);gl.uniform1i(U.ct,1);return true}catch(e){console.warn(e);return false}}
+let useGL=initGL(),ctx2=null;
+if(!useGL){if(gl){const n=cv.cloneNode();cv.replaceWith(n);cv=n}ctx2=cv.getContext('2d')}
+function draw(forceSplit){if(!v.videoWidth)return;const sp=forceSplit!=null?forceSplit:split;
+ if(useGL){gl.viewport(0,0,cv.width,cv.height);gl.bindTexture(gl.TEXTURE_2D,tex);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,v);
+  gl.uniform2f(U.px,1/cv.width,1/cv.height);gl.uniform1f(U.ai,P.ai);gl.uniform1f(U.br,P.bright);gl.uniform1f(U.ga,P.gamma);gl.uniform1f(U.co,P.contrast);gl.uniform1f(U.sa,P.sat);gl.uniform1f(U.sh,P.sharp);gl.uniform1f(U.dn,P.denoise);gl.uniform1f(U.ni,night?1:0);gl.uniform1f(U.sp,sp?1:0);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);}
+ else{const w=cv.width,h=cv.height,k=autoGain;ctx2.filter=`brightness(${k*(1+P.bright*2)}) contrast(${P.contrast}) saturate(${night?0:P.sat}) blur(${P.denoise}px)`+(night?' sepia(1) hue-rotate(70deg) saturate(4)':'');
+  ctx2.drawImage(v,0,0,w,h);ctx2.filter='none';if(sp){ctx2.drawImage(v,0,0,v.videoWidth/2,v.videoHeight,0,0,w/2,h);ctx2.fillStyle='#fff';ctx2.fillRect(w/2-1,0,2,h)}}}
+let autoGain=1;
+function loop(){if(v.paused||v.ended)return;updateCurve();draw();$('seek').value=v.currentTime/v.duration*1000||0;requestAnimationFrame(loop)}
+
+// ================= Súper resolución =================
+function srPlan(){const W=v.videoWidth,H=v.videoHeight,m=Math.max(W,H);
+ useSR=srMode==='on'||(srMode==='auto'&&Math.min(W,H)<=720);
+ const inScale=Math.min(1,640/m);const iw=Math.round(W*inScale/2)*2,ih=Math.round(H*inScale/2)*2;
+ let ow=W*2,oh=H*2;const cap=1920/Math.max(ow,oh);if(cap<1){ow*=cap;oh*=cap}
+ return{iw,ih,ow:Math.round(ow/2)*2,oh:Math.round(oh/2)*2}}
+const srIn=document.createElement('canvas'),srBig=document.createElement('canvas'),srOut=document.createElement('canvas');
+// toma el cuadro ya aclarado (canvas cv) y lo pasa por Real-ESRGAN x4, luego reduce a la salida
+async function superRes(plan){srIn.width=plan.iw;srIn.height=plan.ih;const ic=srIn.getContext('2d',{willReadFrequently:true});ic.drawImage(cv,0,0,plan.iw,plan.ih);
+ const d=ic.getImageData(0,0,plan.iw,plan.ih).data;const o=await srSess.run({input:toTensor(d,plan.iw,plan.ih)});const t=o.output,[,,H4,W4]=t.dims,f=t.data,n=W4*H4;
+ srBig.width=W4;srBig.height=H4;const bc=srBig.getContext('2d');const img=bc.createImageData(W4,H4),p=img.data;
+ for(let i=0;i<n;i++){p[i*4]=f[i]*255;p[i*4+1]=f[n+i]*255;p[i*4+2]=f[2*n+i]*255;p[i*4+3]=255}bc.putImageData(img,0,0);
+ srOut.width=plan.ow;srOut.height=plan.oh;const oc=srOut.getContext('2d');oc.imageSmoothingQuality='high';oc.drawImage(srBig,0,0,plan.ow,plan.oh);return srOut}
+
+// ================= Flujo automático =================
+function seekTo(t){return new Promise(r=>{const done=()=>{v.removeEventListener('seeked',done);(v.requestVideoFrameCallback?r():requestAnimationFrame(()=>r()))};v.addEventListener('seeked',done);v.currentTime=Math.min(t,Math.max(0,v.duration-0.05))})}
+function frameLum(){sctx.drawImage(v,0,0,CW,CH);const d=sctx.getImageData(0,0,CW,CH).data;let s=0;for(let i=0;i<d.length;i+=4)s+=.299*d[i]+.587*d[i+1]+.114*d[i+2];return s/(d.length/4)/255}
+let fileObj=null,loadPromise=loadAI();
+$('file').onchange=e=>{const f=e.target.files[0];if(!f)return;fileObj=f;$('work').classList.remove('hide');$('dl').innerHTML='';$('cmp').classList.add('hide');
+ say('Abriendo video…',0.02);v.src=URL.createObjectURL(f);v.load()};
+v.onloadedmetadata=async()=>{let w=v.videoWidth,h=v.videoHeight,m=Math.max(w,h);if(m>1280){w=Math.round(w*1280/m/2)*2;h=Math.round(h*1280/m/2)*2}cv.width=w;cv.height=h;
+ CH=Math.max(16,Math.round(CW*v.videoHeight/v.videoWidth));small.width=CW;small.height=CH;await autoAnalyze()};
+async function autoAnalyze(){$('export').disabled=true;say('🧠 Cargando IA…',0.1);await loadPromise;
+ let lums=[];for(let k=0;k<5;k++){await seekTo(v.duration*(k+0.5)/5);lums.push(frameLum());say('🔍 Analizando video…',0.2+0.1*k)}
+ const m=lums.reduce((a,b)=>a+b)/lums.length;
+ P=Object.assign({},DEF);P.denoise=m<0.12?0.6:m<0.25?0.4:0.15;P.ai=m<0.08?1.2:m>0.45?0.5:1;P.sharp=0.35;autoGain=Math.min(4,0.45/Math.max(m,0.05));
+ srPlan();sync();await seekTo(v.duration/2);await updateCurve('reset');draw();
+ const W=v.videoWidth,H=v.videoHeight;
+ $('tags').innerHTML=`<span>${W}×${H}</span><span>Luz: ${(m*100).toFixed(0)}% ${m<0.25?'(muy oscuro)':''}</span><span>${aiOK?'IA Zero-DCE++ ✔':'Modo automático sin IA'}</span><span>${useSR?'Súper resolución → '+srPlan().ow+'×'+srPlan().oh:'Resolución original'}</span>`;
+ if(useSR){say('✨ Mejorando calidad con IA (vista previa)…',0.8);if(await loadSR()){try{draw(false);const t0=performance.now();const o=await superRes(srPlan());srMs=performance.now()-t0;
+   const c=document.createElement('canvas');c.width=o.width;c.height=o.height;const x=c.getContext('2d');x.drawImage(o,0,0);x.drawImage(v,0,0,v.videoWidth/2,v.videoHeight,0,0,o.width/2,o.height);x.fillStyle='#fff';x.fillRect(o.width/2-2,0,4,o.height);
+   x.font=`bold ${Math.round(o.height/20)}px sans-serif`;x.fillText('ANTES',10,o.height/14);x.fillText('DESPUÉS (IA)',o.width/2+10,o.height/14);const est=srMs/1000*v.duration*30;if(srMode==='auto'&&est>300){useSR=false;sync();$('tags').innerHTML+=`<span>Video largo: súper resolución tardaría ~${Math.round(est/60)} min; se usa nitidez rápida (puedes activarla en Ajustes avanzados)</span>`}$('cmp').src=c.toDataURL('image/jpeg',0.85);$('cmp').classList.remove('hide');draw()}catch(e){console.warn(e);useSR=false;sync()}}else{useSR=false;sync()}}
+ say(`✅ Listo. Mira el antes/después y toca "Descargar video mejorado".${useSR&&srMs?` (Súper resolución ${srEP}: ~${(srMs/1000).toFixed(1)} s por cuadro)`:''}`,1);$('export').disabled=false}
+let srMs=0,srEP='';
+v.onplay=()=>{$('play').textContent='⏸️ Pausa';loop()};v.onpause=()=>$('play').textContent='▶️ Reproducir';
+v.onseeked=()=>{if(v.paused){updateCurve().then(()=>draw())}};
+$('play').onclick=()=>{if(!v.src)return;v.paused?v.play():v.pause()};
+$('seek').oninput=e=>{if(v.duration)v.currentTime=e.target.value/1000*v.duration};
+$('split').onclick=()=>{split=!split;sync();draw()};$('night').onclick=()=>{night=!night;sync();draw()};
+$('reset').onclick=()=>{srMode='auto';if(v.src)autoAnalyze()};
+$('srBtn').onclick=()=>{srMode=srMode==='auto'?'on':srMode==='on'?'off':'auto';if(v.videoWidth)srPlan();sync()};
+$('cancel').onclick=()=>{cancel=true};
+$('png').onclick=async()=>{if(!v.videoWidth)return;draw(false);let src=cv;if(useSR&&await loadSR()){say('✨ Aplicando súper resolución…');src=await superRes(srPlan())}
+ src.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='foto-mejorada.png';a.click();draw();say('📷 Foto guardada.')},'image/png')};
+
+// ================= Exportar =================
+$('export').onclick=async()=>{if(!v.videoWidth)return;v.pause();cancel=false;$('export').disabled=true;$('cancel').classList.remove('hide');$('dl').innerHTML='';
+ try{if(window.VideoEncoder&&window.Mp4Muxer)await exportWebCodecs();else await exportRealtime()}catch(e){console.error(e);say('Error al exportar: '+e.message+'. Probando modo alternativo…');try{await exportRealtime()}catch(e2){say('No se pudo exportar: '+e2.message)}}
+ $('export').disabled=false;$('cancel').classList.add('hide');draw()};
+function offer(blob,ext){$('dl').innerHTML=`<a class="btn dl" download="video-mejorado.${ext}" href="${URL.createObjectURL(blob)}">💾 Guardar video-mejorado.${ext} (${(blob.size/1048576).toFixed(1)} MB)</a>`}
+async function pickCodec(w,h){for(const c of ['avc1.640033','avc1.640028','avc1.4d0028','avc1.42E01F']){const cfg={codec:c,width:w,height:h,bitrate:Math.round(w*h*30*0.15),framerate:30};try{if((await VideoEncoder.isConfigSupported(cfg)).supported)return cfg}catch(e){}}return null}
+async function exportWebCodecs(){
+ const plan=srPlan();const sr=useSR&&await loadSR();const ow=sr?plan.ow:cv.width,oh=sr?plan.oh:cv.height;
+ const vcfg=await pickCodec(ow,oh);if(!vcfg)throw new Error('H.264 no soportado');
+ // audio
+ let ab=null,acfg=null;try{if(window.AudioEncoder){const ac=new (window.AudioContext||window.webkitAudioContext)({sampleRate:48000});ab=await ac.decodeAudioData(await fileObj.arrayBuffer());
+   const nc=Math.min(2,ab.numberOfChannels);acfg=null;for(const [c,m,sr] of [['mp4a.40.2','aac',ab.sampleRate],['opus','opus',48000]]){const k={codec:c,sampleRate:sr,numberOfChannels:nc,bitrate:128000};if(sr===ab.sampleRate&&(await AudioEncoder.isConfigSupported(k)).supported){acfg=k;acfg.mux=m;break}}}}catch(e){console.warn('sin audio',e);acfg=null}
+ const muxer=new Mp4Muxer.Muxer({target:new Mp4Muxer.ArrayBufferTarget(),video:{codec:'avc',width:ow,height:oh},audio:acfg?{codec:acfg.mux,sampleRate:acfg.sampleRate,numberOfChannels:acfg.numberOfChannels}:undefined,fastStart:'in-memory'});
+ let err=null;const venc=new VideoEncoder({output:(c,m)=>muxer.addVideoChunk(c,m),error:e=>err=e});venc.configure(vcfg);
+ const fps=30,N=Math.max(1,Math.floor(v.duration*fps));const t0=performance.now();updateCurve('reset');
+ for(let i=0;i<N;i++){if(cancel)throw new Error('cancelado');if(err)throw err;
+  await seekTo(i/fps);await updateCurve(true);draw(false);const src=sr?await superRes(plan):cv;
+  const fr=new VideoFrame(src,{timestamp:Math.round(i*1e6/fps),duration:Math.round(1e6/fps)});venc.encode(fr,{keyFrame:i%60===0});fr.close();
+  while(venc.encodeQueueSize>4)await new Promise(r=>setTimeout(r,5));
+  const el=(performance.now()-t0)/1000,eta=el/(i+1)*(N-i-1);say(`⏳ Mejorando cuadro ${i+1}/${N} · faltan ~${eta<90?Math.round(eta)+' s':Math.round(eta/60)+' min'} (no cierres la página)`,(i+1)/N)}
+ await venc.flush();
+ if(acfg){say('🔊 Agregando audio…');const aenc=new AudioEncoder({output:(c,m)=>muxer.addAudioChunk(c,m),error:e=>console.warn(e)});const {mux,...ak}=acfg;aenc.configure(ak);
+  const ch=acfg.numberOfChannels,len=Math.min(ab.length,Math.ceil(N/fps*ab.sampleRate)),B=4096;
+  for(let s=0;s<len;s+=B){const n=Math.min(B,len-s),buf=new Float32Array(n*ch);for(let c=0;c<ch;c++)buf.set(ab.getChannelData(c).subarray(s,s+n),c*n);
+   const ad=new AudioData({format:'f32-planar',sampleRate:ab.sampleRate,numberOfFrames:n,numberOfChannels:ch,timestamp:Math.round(s/ab.sampleRate*1e6),data:buf});aenc.encode(ad);ad.close()}
+  await aenc.flush()}
+ muxer.finalize();const blob=new Blob([muxer.target.buffer],{type:'video/mp4'});offer(blob,'mp4');
+ say(`✅ ¡Listo! ${ow}×${oh}${acfg?' con audio':' (sin audio)'} · ${((performance.now()-t0)/1000).toFixed(0)} s`,1)}
+let actx,dest;
+async function exportRealtime(){ // respaldo: grabación en tiempo real (sin súper resolución)
+ if(!window.MediaRecorder||!cv.captureStream)throw new Error('Tu navegador no permite exportar video');
+ const st=cv.captureStream(30);
+ try{if(!actx){actx=new (window.AudioContext||window.webkitAudioContext)();const s=actx.createMediaElementSource(v);dest=actx.createMediaStreamDestination();s.connect(dest);s.connect(actx.destination)}await actx.resume();dest.stream.getAudioTracks().forEach(t=>st.addTrack(t))}catch(e){}
+ const type=['video/mp4;codecs=avc1','video/mp4','video/webm;codecs=vp9,opus','video/webm'].find(x=>MediaRecorder.isTypeSupported(x))||'';
+ const rec=new MediaRecorder(st,type?{mimeType:type,videoBitsPerSecond:8e6}:{});const ch=[];rec.ondataavailable=e=>e.data.size&&ch.push(e.data);
+ const done=new Promise(r=>rec.onstop=r);await seekTo(0);rec.start(1000);v.muted=false;split=false;await v.play();
+ await new Promise(r=>{const tick=()=>{if(cancel){v.pause();return r()}say(`⏳ Grabando ${Math.round(v.currentTime/v.duration*100)}%`,v.currentTime/v.duration);v.ended?r():requestAnimationFrame(tick)};tick()});
+ rec.stop();await done;v.muted=true;split=true;sync();const mt=rec.mimeType||type||'video/webm';offer(new Blob(ch,{type:mt}),mt.includes('mp4')?'mp4':'webm');say('✅ ¡Listo!',1)}
+</script></body></html>
